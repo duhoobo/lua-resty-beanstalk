@@ -2,8 +2,8 @@
 
 local tcp
 
-if not nil then
-    local socket = require("socket")
+if _G.standalone then
+    local socket = require("socket.core")
     tcp = socket.tcp 
 else
     tcp = ngx.socket.tcp
@@ -20,6 +20,9 @@ local remove = table.remove
 local setmetatable = setmetatable
 local type = type
 local error = error
+local pairs = pairs
+local print = print
+local tonumber = tonumber
 
 
 module(...)
@@ -29,62 +32,13 @@ _VERSION = "0.01"
 local DEFAULT_HOST = "localhost"
 local DEFAULT_PORT = 11300
 
-local DEFAULT_PRIORITY = 2147483648
+local DEFAULT_PRIORITY = 2 ^ 32 - 1
 local DEFAULT_DELAY = 0
 local DEFAULT_TTR = 120
 
 
-local function _readable_error(self, indicator)
-    local errors = {
-        ["OUT_OF_MEMORY"]= "out of memory",
-        ["INTERNAL_ERROR"]= "internel error",
-        ["BAD_FORMAT"]= "bad format",
-        ["UNKNOWN_COMMAND"]= "unknown command",
-        ["EXPECTED_CRLF"]= "expect CRLF",
-        ["JOB_TOO_BIT"]= "job too big",
-        ["DRAINING"]= "server in drain mode",
-        ["DEADLINE_SOON"]= "deadline soon",
-        ["TIMED_OUT"]= "timedout",
-    }
 
-    for key, msg in pairs(errors) do
-        if key == indicator then return msg end
-    end
-
-    return indicator
-end
-
-
-local function _interact(self, request, expected)
-    local sock = self.sock
-
-    local bytes, err = sock:send(request)
-    if not bytes then
-        return nil, "send failed " .. err
-    end
-
-    local line, err, partial = sock:receive("*l")
-    if not line then
-        return nil, "read reply failed " .. err
-    end
-
-    local parts = split(line, " ")
-
-    for indicator in expected do
-        if parts[1] == indicator then
-            remove(parts, 1)
-            return parts
-        end
-    end
-
-    return nil, self:_readable_error(parts[1])
-end
-
-
---
--- public methods
---
-function split(line, sep)
+local function _split(line, sep)
     local sep, fields = sep or ":", {}
     local pat = format("([^%s]+)", sep)
 
@@ -96,6 +50,55 @@ function split(line, sep)
 end
 
 
+local function _readable_error(indicator)
+    local errors = {
+        ["OUT_OF_MEMORY"]= "out of memory",
+        ["INTERNAL_ERROR"]= "internel error",
+        ["BAD_FORMAT"]= "bad format",
+        ["UNKNOWN_COMMAND"]= "unknown command",
+        ["EXPECTED_CRLF"]= "expect CRLF",
+        ["JOB_TOO_BIT"]= "job too big",
+        ["DRAINING"]= "server in drain mode",
+        ["DEADLINE_SOON"]= "deadline soon",
+        ["TIMED_OUT"]= "timedout",
+        ["NOT_FOUND"]= "job not found",
+    }
+
+    for key, msg in pairs(errors) do
+        if key == indicator then return msg end
+    end
+
+    return indicator
+end
+
+
+local function _interact(sock, request, expected)
+    local bytes, err = sock:send(request)
+    if not bytes then
+        return nil, "send failed " .. err
+    end
+
+    local line, err, partial = sock:receive("*l")
+    if not line then
+        return nil, "read reply failed " .. err
+    end
+
+    local parts = _split(line, " ")
+
+    for _, indicator in pairs(expected) do
+        if parts[1] == indicator then
+            remove(parts, 1)
+            return parts
+        end
+    end
+
+    return nil, _readable_error(parts[1])
+end
+
+
+--
+-- public methods
+--
 function new(self)
     local sock, err = tcp()
     if not sock then
@@ -106,13 +109,13 @@ function new(self)
 end
 
 
-function set_timeout(self, timeout)
+function set_timeout(self, ...)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
     end
 
-    return sock:settimeout(timeout)
+    return sock:settimeout(...)
 end
 
 
@@ -126,13 +129,16 @@ function set_keepalive(self, ...)
 end
 
 
-function connect(self, ...)
+function connect(self, host, port) 
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
     end
 
-    return sock:connect(...)
+    host = host or DEFAULT_HOST
+    port = port or DEFAULT_PORT
+
+    return sock:connect(host, port)
 end
 
 
@@ -142,7 +148,7 @@ function put(self, args)
         return nil, "not initialized"
     end
 
-    if type(args.body) != "string" then
+    if type(args.data) ~= "string" then
         return nil, "not valid payload"
     end
 
@@ -150,11 +156,11 @@ function put(self, args)
     args.ttr = args.ttr or DEFAULT_TTR
     args.delay = args.delay or DEFAULT_DELAY
 
-    local reply, err = self:_interact(concat{
+    local reply, err = _interact(sock, concat{
             "put ", args.priority, " ", args.delay, " ", 
                 args.ttr, " ", #args.data, "\r\n",
-                args.body, "\r\n"
-        }, ["INSERTED", "BURIED"])
+                args.data, "\r\n"
+        }, {"INSERTED", "BURIED"})
 
     if not reply then
         return nil, err
@@ -172,16 +178,17 @@ function use(self, args)
 
     tube = args.tube or "default"
 
-    local reply, err = self:_interact(concat{
+    local retval, err = _interact(sock, concat{
             "use ", tube, "\r\n"
-        }, ["USING"], [])
+        }, {"USING"})
 
-    if not reply then
+    if not retval then
         return nil, err
     end
 
-    return reply[1]
+    return retval[1]
 end
+
 
 function reserve(self, args)
     local sock = self.sock
@@ -189,7 +196,7 @@ function reserve(self, args)
         return nil, "not initialized"
     end
 
-    local request, retval
+    local result, request = {}
 
     if args.timeout then
         request = concat{"reserve-with-timeout ", args.timeout, "\r\n"}
@@ -197,31 +204,50 @@ function reserve(self, args)
         request = "reserve\r\n"
     end
 
-    local reply, err = self:_interact(request, ["RESERVED"])
-    if not reply then
+    local retval, err = _interact(sock, request, {"RESERVED"})
+    if not retval then
         return nil, err
     end
 
-    retval.id = tonumber(reply[1])
+    result.id = tonumber(retval[1])
 
-    local line, err = sock:receive(reply[2])
+    local line, err = sock:receive(retval[2])
     if not line then
         return nil, "failed to receive job body: " .. (err or "")
     end
 
-    retval.data = line
+    result.data = line
 
     line, err = sock:receive(2) -- discard the trailing CRLF
     if not line then
         return nil, "failed to receive CRLF: " .. (err or "")
     end
 
-    return retval
+    return result
 end
 
 
 function delete(self, args)
+    local sock = self.sock
+    if not sock then
+        return nil, "not initialized"
+    end
+
+    if type(args.id) ~= "number" then
+        return nil, "job id should be a number"
+    end
+
+    local retval, err = _interact(sock, concat{
+            "delete ", args.id, "\r\n"
+        }, {"DELETED"})
+    if not retval then
+        return nil, err
+    end
+
+    return 1
 end
+
+
 function release(self, args)
 end
 function bury(self, args)
@@ -233,14 +259,14 @@ end
 function watch(self, args)
     local sock = self.sock
     if not sock then
-        return nil, "not intialized"
+        return nil, "not initialized"
     end
 
     tube = args.tube or "default"
 
-    local reply, err = self:_interact(concat{
+    local reply, err = _interact(sock, concat{
             "watch ", tube, "\r\n"
-        }, ["WATCHING"])
+        }, {"WATCHING"})
     
     if not reply then
         return nil, err
