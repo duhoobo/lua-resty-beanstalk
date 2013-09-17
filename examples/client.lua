@@ -1,4 +1,4 @@
-_G.standalone = true
+config = {blocking= true}
 
 package.path = "../lib/?.lua;;"
 local beanstalk = require("nginx.beanstalk")
@@ -7,13 +7,14 @@ local beanstalk = require("nginx.beanstalk")
 local client = beanstalk.new()
 
 
-local retval, err = client:connect("127.0.0.1", 11300)
+local retval, err = client:connect()
 if not retval then
     print("connect", err)
     return nil
 end
 
 print("connected")
+
 
 retval, err = client:set_timeout(10)
 if not retval then
@@ -23,6 +24,7 @@ end
 
 print("timeout set")
 
+
 retval, err = client:put{data= "Hi"}
 if not retval then
     print("put", err)
@@ -30,6 +32,20 @@ if not retval then
 end
 
 print("job id is " .. retval)
+
+retval, err = client:watch{tube= "commit"}
+if not retval then
+    print("use", err)
+    return nil
+end
+
+print("watching ", retval, " tubes")
+
+retval, err = client:ignore{tube= "default"}
+if not retval then
+    print("ignore", err)
+    return nil
+end
 
 retval, err = client:reserve{timeout= 0}
 if not retval then
@@ -39,6 +55,7 @@ end
 
 print(retval.id, retval.data)
 local job_id = retval.id
+
 
 retval, err = client:delete{id=job_id}
 if not retval then

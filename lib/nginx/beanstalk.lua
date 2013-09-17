@@ -2,7 +2,7 @@
 
 local tcp
 
-if _G.standalone then
+if config and config.blocking then
     local socket = require("socket.core")
     tcp = socket.tcp 
 else
@@ -32,6 +32,7 @@ _VERSION = "0.01"
 local DEFAULT_HOST = "localhost"
 local DEFAULT_PORT = 11300
 
+local DEFAULT_TUBE = "default"
 local DEFAULT_PRIORITY = 2 ^ 32 - 1
 local DEFAULT_DELAY = 0
 local DEFAULT_TTR = 120
@@ -75,12 +76,12 @@ end
 local function _interact(sock, request, expected)
     local bytes, err = sock:send(request)
     if not bytes then
-        return nil, "send failed " .. err
+        return nil, "send failed: " .. err
     end
 
     local line, err, partial = sock:receive("*l")
     if not line then
-        return nil, "read reply failed " .. err
+        return nil, "read failed: " .. err
     end
 
     local parts = _split(line, " ")
@@ -129,14 +130,18 @@ function set_keepalive(self, ...)
 end
 
 
-function connect(self, host, port) 
+function connect(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
     end
 
-    host = host or DEFAULT_HOST
-    port = port or DEFAULT_PORT
+    if args and type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    local host = args and args.host or DEFAULT_HOST
+    local port = args and args.port or DEFAULT_PORT
 
     return sock:connect(host, port)
 end
@@ -148,8 +153,12 @@ function put(self, args)
         return nil, "not initialized"
     end
 
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
     if type(args.data) ~= "string" then
-        return nil, "not valid payload"
+        return nil, "payload should be string"
     end
 
     args.priority = args.priority or DEFAULT_PRIORITY
@@ -176,10 +185,14 @@ function use(self, args)
         return nil, "not initialized"
     end
 
-    tube = args.tube or "default"
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    args.tube = args.tube or DEFAULT_TUBE
 
     local retval, err = _interact(sock, concat{
-            "use ", tube, "\r\n"
+            "use ", args.tube, "\r\n"
         }, {"USING"})
 
     if not retval then
@@ -196,9 +209,13 @@ function reserve(self, args)
         return nil, "not initialized"
     end
 
+    if args and type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
     local result, request = {}
 
-    if args.timeout then
+    if args and args.timeout then
         request = concat{"reserve-with-timeout ", args.timeout, "\r\n"}
     else
         request = "reserve\r\n"
@@ -213,14 +230,14 @@ function reserve(self, args)
 
     local line, err = sock:receive(retval[2])
     if not line then
-        return nil, "failed to receive job body: " .. (err or "")
+        return nil, "read job body failed: " .. (err or "")
     end
 
     result.data = line
 
     line, err = sock:receive(2) -- discard the trailing CRLF
     if not line then
-        return nil, "failed to receive CRLF: " .. (err or "")
+        return nil, "receive CRLF failed: " .. (err or "")
     end
 
     return result
@@ -231,6 +248,10 @@ function delete(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
+    end
+
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
     end
 
     if type(args.id) ~= "number" then
@@ -249,10 +270,83 @@ end
 
 
 function release(self, args)
+    local sock = self.sock
+    if not sock then
+        return nil, "not initialized"
+    end
+
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    if type(args.id) ~= "number" then
+        return nil, "job id should be a number"
+    end
+
+    args.priority = args.priority or DEFAULT_PRIORITY
+    args.delay = args.delay or DEFAULT_DELAY
+
+    local retval, err = _interact(sock, concat{
+            "release ", args.id, " ", args.priority, " ",
+                        args.delay, "\r\n"
+        }, {"RELEASED", "BURIED"})
+    if not retval then
+        return nil, err
+    end
+
+    return 1
 end
+
+
 function bury(self, args)
+    local sock = self.sock
+    if not sock then
+        return nil, "not initialized"
+    end
+
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    if type(args.id) ~= "number" then
+        return nil, "job id should be a number"
+    end
+
+    args.priority = args.priority or DEFAULT_PRIORITY
+
+    local retval, err = _interact(sock, concat{
+            "bury ", args.id, " ", args.priority, "\r\n"
+        }, {"BURIED"})
+    if not retval then
+        return nil, err
+    end
+
+    return 1
 end
+
+
 function touch(self, args)
+    local sock = self.sock
+    if not sock then
+        return nil, "not initialized"
+    end
+
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    if type(args.id) ~= "number" then
+        return nil, "job id should be a number"
+    end
+
+    local retval, err = _interact(sock, concat{
+            "touch", args.id, "\r\n"
+        }, {"TOUCHED"})
+    if not retval then
+        return nil, err
+    end
+
+    return 1
 end
 
 
@@ -262,10 +356,14 @@ function watch(self, args)
         return nil, "not initialized"
     end
 
-    tube = args.tube or "default"
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    args.tube = args.tube or "default"
 
     local reply, err = _interact(sock, concat{
-            "watch ", tube, "\r\n"
+            "watch ", args.tube, "\r\n"
         }, {"WATCHING"})
     
     if not reply then
@@ -275,12 +373,37 @@ function watch(self, args)
     return reply[1]
 end
 
+
 function ignore(self, args)
+    local sock = self.sock
+    if not sock then
+        return nil, "not initialized"
+    end
+
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    args.tube = args.tube or "default"
+
+    local reply, err = _interact(sock, concat{
+            "ignore ", args.tube, "\r\n"
+        }, {"WATCHING", "NOT_IGNORED"})
+    
+    if not reply then
+        return nil, err
+    end
+
+    return reply[1] and reply[1] or 1
 end
+
+
 function peek(self, args)
 end
+
 function kick(self, args)
 end
+
 function stats(self, args)
 end
 
