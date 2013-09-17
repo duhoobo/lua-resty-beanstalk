@@ -97,6 +97,31 @@ local function _interact(sock, request, expected)
 end
 
 
+local function _read_job(sock, jid, bytes)
+    if not tonumber(jid) or not tonumber(bytes) 
+    then
+        return nil, "jid and bytes not number"
+    end
+
+    local result = {id= tonumber(jid)}
+
+    local line, err = sock:receive(bytes)
+    if not line then
+        return nil, "read job data failed: " .. (err or "")
+    end
+
+    result.data = line
+
+    line, err = sock:receive(2)
+    if not line then
+        return nil, "read last CRLF failed: " .. (err or "")
+    end
+
+    return result
+end
+
+
+
 --
 -- public methods
 --
@@ -213,7 +238,7 @@ function reserve(self, args)
         return nil, "args should be a table"
     end
 
-    local result, request = {}
+    local request
 
     if args and args.timeout then
         request = concat{"reserve-with-timeout ", args.timeout, "\r\n"}
@@ -226,21 +251,12 @@ function reserve(self, args)
         return nil, err
     end
 
-    result.id = tonumber(retval[1])
-
-    local line, err = sock:receive(retval[2])
-    if not line then
-        return nil, "read job body failed: " .. (err or "")
+    retval, err = _read_job(sock, retval[1], retval[2])
+    if not retval then
+        return nil, err
     end
 
-    result.data = line
-
-    line, err = sock:receive(2) -- discard the trailing CRLF
-    if not line then
-        return nil, "receive CRLF failed: " .. (err or "")
-    end
-
-    return result
+    return retval
 end
 
 
@@ -398,13 +414,59 @@ function ignore(self, args)
 end
 
 
+local _peek_types = {
+    ready= "-ready", delayed= "-delayed", buried= "-buried"
+}
+
 function peek(self, args)
+    local sock = self.sock
+    if not sock then
+        return nil, "not initialized"
+    end
+
+    if type(args) ~= "table" then
+        return nil, "args should be a table"
+    end
+
+    if args.id and type(args.id) ~= "number" then
+        return nil, "job is should be a number"
+    end
+
+    if not args.id and not _peek_types[args.type] then
+        return nil, "wrong peek variation"
+    end
+
+    local request = {}
+    if args.id then
+        request = concat{"peek ", args.id, "\r\n"}
+    else
+        request = concat{"peek", _peek_types[args.type], "\r\n"}
+    end
+
+    local retval, err = _interact(sock, request, {"FOUND"})
+    if not retval then
+        return nil, err
+    end
+
+    retval, err = _read_job(sock, retval[1], retval[2])
+    if not retval then
+        return nil, err
+    end
+
+    return retval
 end
 
+
 function kick(self, args)
+    return nil, "not implemented"
 end
 
 function stats(self, args)
+    return nil, "not implemented"
+end
+
+function list(self, args)
+    return nil, "not implemented"
 end
 
 
