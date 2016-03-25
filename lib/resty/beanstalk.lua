@@ -4,47 +4,36 @@ local tcp
 
 if config and config.blocking then
     local socket = require("socket.core")
-    tcp = socket.tcp 
+    tcp = socket.tcp
 else
     tcp = ngx.socket.tcp
 end
 
-local sub = string.sub
-local gsub = string.gsub
-local format = string.format
-local match = string.match
-local strlen = string.len
-local insert = table.insert
-local concat = table.concat
-local remove = table.remove
-local setmetatable = setmetatable
-local type = type
-local error = error
-local pairs = pairs
-local print = print
-local tonumber = tonumber
 
+local strgsub = string.gsub
+local strformat = string.format
+local tabconcat = table.concat
+local tabremove = table.remove
 
-module(...)
-
-_VERSION = "0.01"
 
 local DEFAULT_HOST = "localhost"
 local DEFAULT_PORT = 11300
-
 local DEFAULT_TUBE = "default"
 local DEFAULT_PRIORITY = 2 ^ 32 - 1
 local DEFAULT_DELAY = 0
 local DEFAULT_TTR = 120
 
 
+local _M = {}
+_M._VERSION = "0.02"
+
 
 local function _split(line, sep)
     local sep, fields = sep or ":", {}
-    local pat = format("([^%s]+)", sep)
+    local pat = strformat("([^%s]+)", sep)
 
-    gsub(line, pat, function(c) 
-        fields[#fields+1] = c 
+    strgsub(line, pat, function(c)
+            fields[#fields+1] = c
     end)
 
     return fields
@@ -79,7 +68,7 @@ local function _interact(sock, request, expected)
         return nil, "send failed: " .. err
     end
 
-    local line, err, partial = sock:receive("*l")
+    local line, err, _ = sock:receive("*l")
     if not line then
         return nil, "read failed: " .. err
     end
@@ -88,7 +77,7 @@ local function _interact(sock, request, expected)
 
     for _, indicator in pairs(expected) do
         if parts[1] == indicator then
-            remove(parts, 1)
+            tabremove(parts, 1)
             return parts
         end
     end
@@ -98,7 +87,7 @@ end
 
 
 local function _read_job(sock, jid, bytes)
-    if not tonumber(jid) or not tonumber(bytes) 
+    if not tonumber(jid) or not tonumber(bytes)
     then
         return nil, "jid and bytes not number"
     end
@@ -125,7 +114,7 @@ end
 --
 -- public methods
 --
-function new(self)
+function _M.new(self)
     local sock, err = tcp()
     if not sock then
         return nil, err
@@ -135,17 +124,18 @@ function new(self)
 end
 
 
-function set_timeout(self, ...)
+function _M.set_timeout(self, ...)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
     end
 
-    return sock:settimeout(...)
+    sock:settimeout(...)
+    return true
 end
 
 
-function set_keepalive(self, ...)
+function _M.set_keepalive(self, ...)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -155,7 +145,7 @@ function set_keepalive(self, ...)
 end
 
 
-function connect(self, args)
+function _M.connect(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -172,7 +162,7 @@ function connect(self, args)
 end
 
 
-function put(self, args)
+function _M.put(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -190,10 +180,10 @@ function put(self, args)
     args.ttr = args.ttr or DEFAULT_TTR
     args.delay = args.delay or DEFAULT_DELAY
 
-    local reply, err = _interact(sock, concat{
-            "put ", args.priority, " ", args.delay, " ", 
-                args.ttr, " ", #args.data, "\r\n",
-                args.data, "\r\n"
+    local reply, err = _interact(sock, tabconcat{
+            "put ", args.priority, " ", args.delay, " ",
+            args.ttr, " ", #args.data, "\r\n",
+            args.data, "\r\n"
         }, {"INSERTED", "BURIED"})
 
     if not reply then
@@ -204,7 +194,7 @@ function put(self, args)
 end
 
 
-function use(self, args)
+function _M.use(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -216,7 +206,7 @@ function use(self, args)
 
     args.tube = args.tube or DEFAULT_TUBE
 
-    local retval, err = _interact(sock, concat{
+    local retval, err = _interact(sock, tabconcat{
             "use ", args.tube, "\r\n"
         }, {"USING"})
 
@@ -228,7 +218,7 @@ function use(self, args)
 end
 
 
-function reserve(self, args)
+function _M.reserve(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -239,9 +229,8 @@ function reserve(self, args)
     end
 
     local request
-
     if args and args.timeout then
-        request = concat{"reserve-with-timeout ", args.timeout, "\r\n"}
+        request = tabconcat{"reserve-with-timeout ", args.timeout, "\r\n"}
     else
         request = "reserve\r\n"
     end
@@ -260,7 +249,7 @@ function reserve(self, args)
 end
 
 
-function delete(self, args)
+function _M.delete(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -274,7 +263,7 @@ function delete(self, args)
         return nil, "job id should be a number"
     end
 
-    local retval, err = _interact(sock, concat{
+    local retval, err = _interact(sock, tabconcat{
             "delete ", args.id, "\r\n"
         }, {"DELETED"})
     if not retval then
@@ -285,7 +274,7 @@ function delete(self, args)
 end
 
 
-function release(self, args)
+function _M.release(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -302,10 +291,10 @@ function release(self, args)
     args.priority = args.priority or DEFAULT_PRIORITY
     args.delay = args.delay or DEFAULT_DELAY
 
-    local retval, err = _interact(sock, concat{
+    local retval, err = _interact(sock, tabconcat{
             "release ", args.id, " ", args.priority, " ",
-                        args.delay, "\r\n"
-        }, {"RELEASED", "BURIED"})
+            args.delay, "\r\n"
+    }, {"RELEASED", "BURIED"})
     if not retval then
         return nil, err
     end
@@ -314,7 +303,7 @@ function release(self, args)
 end
 
 
-function bury(self, args)
+function _M.bury(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -330,7 +319,7 @@ function bury(self, args)
 
     args.priority = args.priority or DEFAULT_PRIORITY
 
-    local retval, err = _interact(sock, concat{
+    local retval, err = _interact(sock, tabconcat{
             "bury ", args.id, " ", args.priority, "\r\n"
         }, {"BURIED"})
     if not retval then
@@ -341,7 +330,7 @@ function bury(self, args)
 end
 
 
-function touch(self, args)
+function _M.touch(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -355,7 +344,7 @@ function touch(self, args)
         return nil, "job id should be a number"
     end
 
-    local retval, err = _interact(sock, concat{
+    local retval, err = _interact(sock, tabconcat{
             "touch", args.id, "\r\n"
         }, {"TOUCHED"})
     if not retval then
@@ -366,7 +355,7 @@ function touch(self, args)
 end
 
 
-function watch(self, args)
+function _M.watch(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -378,10 +367,10 @@ function watch(self, args)
 
     args.tube = args.tube or "default"
 
-    local reply, err = _interact(sock, concat{
+    local reply, err = _interact(sock, tabconcat{
             "watch ", args.tube, "\r\n"
         }, {"WATCHING"})
-    
+
     if not reply then
         return nil, err
     end
@@ -390,7 +379,7 @@ function watch(self, args)
 end
 
 
-function ignore(self, args)
+function _M.ignore(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -402,10 +391,10 @@ function ignore(self, args)
 
     args.tube = args.tube or "default"
 
-    local reply, err = _interact(sock, concat{
+    local reply, err = _interact(sock, tabconcat{
             "ignore ", args.tube, "\r\n"
         }, {"WATCHING", "NOT_IGNORED"})
-    
+
     if not reply then
         return nil, err
     end
@@ -418,7 +407,7 @@ local _peek_types = {
     ready= "-ready", delayed= "-delayed", buried= "-buried"
 }
 
-function peek(self, args)
+function _M.peek(self, args)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -436,11 +425,11 @@ function peek(self, args)
         return nil, "wrong peek variation"
     end
 
-    local request = {}
+    local request
     if args.id then
-        request = concat{"peek ", args.id, "\r\n"}
+        request = tabconcat{"peek ", args.id, "\r\n"}
     else
-        request = concat{"peek", _peek_types[args.type], "\r\n"}
+        request = tabconcat{"peek", _peek_types[args.type], "\r\n"}
     end
 
     local retval, err = _interact(sock, request, {"FOUND"})
@@ -457,20 +446,20 @@ function peek(self, args)
 end
 
 
-function kick(self, args)
+function _M.kick(self, args)
     return nil, "not implemented"
 end
 
-function stats(self, args)
+function _M.stats(self, args)
     return nil, "not implemented"
 end
 
-function list(self, args)
+function _M.list(self, args)
     return nil, "not implemented"
 end
 
 
-function quit(self)
+function _M.quit(self)
     local sock = self.sock
     if not sock then
         return nil, "not initialized"
@@ -478,16 +467,16 @@ function quit(self)
 
     sock:send("quit\r\n")
 
-    sock:close() 
+    sock:close()
 end
 
 
-local class_mt = {
-    -- to prevent use of casual module global variables
-    __newindex = function (table, key, val)
-        error('attempt to write to undeclared variable "' .. key .. '"')
-    end
-}
+setmetatable(_M, {
+        -- to prevent use of casual module global variables
+        __nexindex = function(table, key, val)
+            error('attempt to write to undeclared variable "' .. key .. '"')
+        end
+})
 
-setmetatable(_M, class_mt)
 
+return _M
