@@ -25,7 +25,7 @@ local DEFAULT_TTR = 120
 
 
 local _M = {}
-_M._VERSION = "0.02"
+_M._VERSION = "0.1"
 
 
 local function _split(line, sep)
